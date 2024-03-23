@@ -33,26 +33,36 @@ def zero_blendsShape_target_weights(blendshape_node):
     targets = cmds.listAttr(blendshape_node + '.w', multi=True)
     for target in targets:
         cmds.setAttr(blendshape_node + '.' + target, 0)
-def bake_blendshape_painted_weights(blendshape_node):
+def bake_blendshape_painted_weights(blendshape_node, make_unreal_compatible, delete_orignal_node):
     base_mesh = get_base_shape_from_blendshape(blendshape_node)
     target_names = get_blendshape_target_names(blendshape_node)
     target_connections_in, target_conections_out = get_blendShape_target_connections(blendshape_node)
     break_blendShape_target_connections(blendshape_node)
     zero_blendsShape_target_weights(blendshape_node)
     shapes_and_weights = duplicate_shapes(blendshape_node,target_names, base_mesh)
-    recreate_blendshape(blendshape_node,base_mesh, target_names, shapes_and_weights,target_connections_in)
+    recreate_blendshape(blendshape_node,base_mesh, target_names, shapes_and_weights,target_connections_in,UE_compatible_inbetweens = make_unreal_compatible,delete_original_node = delete_orignal_node)
+    if not delete_orignal_node:
+        reconnect_original_connections(blendshape_node, target_connections_in,target_names)
+
+def reconnect_original_connections(blendshape_node, target_connections_in,targets):
+    for connection_in, target in zip(target_connections_in,targets):
+        if connection_in:
+            for connection in connection_in:
+                cmds.connectAttr(connection, blendshape_node + '.' + target)
+    cmds.setAttr(blendshape_node + '.envelope', 0)
 
 
-def recreate_blendshape(blendshape_node,base_mesh, target_names, shapes_and_weights,target_connections_in, UE4_compatible_inbetweens=True):
-    
-    cmds.delete(blendshape_node)
-    new_blendshape = cmds.blendShape(base_mesh, name=blendshape_node)
+def recreate_blendshape(blendshape_node,base_mesh, target_names, shapes_and_weights,target_connections_in, UE_compatible_inbetweens=True, delete_original_node = False):
+    if delete_original_node:
+        cmds.delete(blendshape_node)
+        
+    new_blendshape = cmds.blendShape(base_mesh, name=blendshape_node+ '_Baked')[0]
     for i, shape_tuple in enumerate(shapes_and_weights):
         full_shape = shape_tuple[2]
         inbetween_shapes = shape_tuple[0]
         inbetween_weights = shape_tuple[1]
         conn = target_connections_in[i]
-        if not UE4_compatible_inbetweens:
+        if not UE_compatible_inbetweens:
             cmds.blendShape(new_blendshape, e=True, target=(base_mesh, i, full_shape, 1.0))
             cmds.delete(full_shape)
             for weight, shape in zip(inbetween_weights, inbetween_shapes):
@@ -60,12 +70,12 @@ def recreate_blendshape(blendshape_node,base_mesh, target_names, shapes_and_weig
                     continue
                 cmds.blendShape(new_blendshape, e=True, target=(base_mesh, i, shape, weight), inBetween=True)
                 cmds.delete(shape)
-            rename_blendshape_target(blendshape_node, full_shape, target_names[i]) 
+            rename_blendshape_target(new_blendshape, full_shape, target_names[i]) 
         #reconnect the connections
         
             if conn:
                 for connection in conn:
-                    cmds.connectAttr(connection, blendshape_node + '.' + target_names[i])
+                    cmds.connectAttr(connection, new_blendshape + '.' + target_names[i])
         else:
             #insert 0 in the weights list. Go through the list and if the next weight value is positive insert 0 at the current index. Also insert an empty string in the shapes list
 
@@ -78,7 +88,7 @@ def recreate_blendshape(blendshape_node,base_mesh, target_names, shapes_and_weig
                 if weight == 0.0:
                     continue
                 target_name = target_names[i] + '_' + str(round(1000*weight))
-                add_blendshape_target_with_name(blendshape_node,base_mesh,shape,target_name)
+                add_blendshape_target_with_name(new_blendshape,base_mesh,shape,target_name)
                 if len(inbetween_weights) < 2:
                     raise ValueError("Shape length is less than two. Something went wrong. Weights and shapes: {inbetween_weights} {inbetween_shapes}")
                 w_a = inbetween_weights[j-1] if j>0 else inbetween_weights[j+1]
@@ -87,7 +97,7 @@ def recreate_blendshape(blendshape_node,base_mesh, target_names, shapes_and_weig
                 if conn:
                     driver_input = conn[0]
                     output = create_inbetweener_driver(w_a,w_b,w_c,driver_input, second_first= j == 1, second_last=j == len(inbetween_weights)-2)
-                    cmds.connectAttr(output, blendshape_node + '.' + target_name)
+                    cmds.connectAttr(output, new_blendshape + '.' + target_name)
                 cmds.delete(shape)
             cmds.delete(full_shape)
 
@@ -284,7 +294,9 @@ def bake_blendnode(*args):
     Callback function for the generate button.
     """
     blendshape_node = cmds.optionMenu("blendshapeNodeMenu", query=True, value=True)
-    bake_blendshape_painted_weights(blendshape_node)
+    delete_orignal_node = cmds.checkBox("DeleteOriginalNode", query=True, value=True)
+    make_unreal_compatible = cmds.checkBox("UnrealCompatibleInbetweens", query=True, value=True)
+    bake_blendshape_painted_weights(blendshape_node, make_unreal_compatible, delete_orignal_node)
 def create_ui():
     """
     UI for baker.
@@ -294,14 +306,20 @@ def create_ui():
     if cmds.window(window_id, exists=True):
         cmds.deleteUI(window_id)
     
-    cmds.window(window_id, title="Generate Inbetweens", widthHeight=(200, 150))
+    cmds.window(window_id, title="Blendnode Baker", widthHeight=(200, 150))
     cmds.columnLayout(adjustableColumn=True)
     cmds.text(label="Select Blendshape Node:")
+
     
     # Blendshape node menu
     cmds.optionMenu("blendshapeNodeMenu")
     for node in get_blendshape_nodes():
         cmds.menuItem(label=node)
+
+    #Add button for Unreal Engine compatibility
+    cmds.checkBox("UnrealCompatibleInbetweens",label="Unreal Compatible Inbetweens", value=True)
+    #add button "delete original node"
+    cmds.checkBox("DeleteOriginalNode",label="Delete Original Node", value=True)
     
     
     # Generate button
