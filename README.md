@@ -1,2 +1,9 @@
 # maya-blendshape-baker
-This is a tool to help aid in exporting blendshapes from maya with FBX. The FBX format does not support painted target weights, which can be a bit annoying as it can be fairly useful. This tool bakes target paint weights into the actual target.
+This is a tool that converts a blendshape node in maya which may have painted target weights and inbetweens into a blendnode that is compatible with unreal engine.
+First this is done by duplicating the shape at for every target, including inbetween weights, and using that as a new target in a new blendshape node. This bakes the result of painted weights into the new targets.
+Second, the driver of the original target weight is connected to the new target. With inbetween targets this is done in such a way that the same motion is produced.
+
+
+
+https://github.com/maccollo/maya-blendshape-baker/assets/23036010/5b4559bd-a887-4d00-a636-2482add40121
+
