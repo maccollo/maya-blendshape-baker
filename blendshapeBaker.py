@@ -1,4 +1,33 @@
 from maya import cmds
+def duplicate_without_deformation(mesh_name, name = None, unlock_channels = True):
+    """Turns off all deformers on the mesh, duplicates it, then turns the deformers back on and returns the duplicated mesh. The unlock channels arguments will unlock the transforms"""
+    if not name:
+        name = mesh_name + '#'
+    history = cmds.listHistory(mesh_name)
+
+    nodes_to_turn_back_on = []
+    nodes_envelope_value = []
+    for node in history:
+        if cmds.attributeQuery('envelope', node=node, exists=True):
+            nodes_to_turn_back_on.append(node)
+            nodes_envelope_value.append(cmds.getAttr(f'{node}.envelope'))
+            cmds.setAttr(f'{node}.envelope', 0)
+
+    duplicated_mesh = cmds.duplicate(mesh_name, name = name)
+    #loop over the nodes to turn back on and reset them to their original value
+    for i, node in enumerate(nodes_to_turn_back_on):
+        cmds.setAttr(f'{node}.envelope', nodes_envelope_value[i])
+    if unlock_channels:
+        cmds.setAttr(duplicated_mesh[0] + '.tx', lock=False)
+        cmds.setAttr(duplicated_mesh[0] + '.ty', lock=False)
+        cmds.setAttr(duplicated_mesh[0] + '.tz', lock=False)
+        cmds.setAttr(duplicated_mesh[0] + '.rx', lock=False)
+        cmds.setAttr(duplicated_mesh[0] + '.ry', lock=False)
+        cmds.setAttr(duplicated_mesh[0] + '.rz', lock=False)
+        cmds.setAttr(duplicated_mesh[0] + '.sx', lock=False)
+        cmds.setAttr(duplicated_mesh[0] + '.sy', lock=False)
+        cmds.setAttr(duplicated_mesh[0] + '.sz', lock=False)
+    return duplicated_mesh
 def get_blendshape_target_names(blendshape_node):
     targets = cmds.listAttr(blendshape_node + '.w', multi=True)
     targetNames = []
@@ -33,17 +62,19 @@ def zero_blendsShape_target_weights(blendshape_node):
     targets = cmds.listAttr(blendshape_node + '.w', multi=True)
     for target in targets:
         cmds.setAttr(blendshape_node + '.' + target, 0)
-def bake_blendshape_painted_weights(blendshape_node, make_unreal_compatible, delete_orignal_node):
+def bake_blendshape_painted_weights(blendshape_node, make_unreal_compatible, delete_original_node,dummy_shapes):
     base_mesh = get_base_shape_from_blendshape(blendshape_node)
     target_names = get_blendshape_target_names(blendshape_node)
     target_connections_in, target_conections_out = get_blendShape_target_connections(blendshape_node)
     break_blendShape_target_connections(blendshape_node)
     zero_blendsShape_target_weights(blendshape_node)
     shapes_and_weights = duplicate_shapes(blendshape_node,target_names, base_mesh)
-    recreate_blendshape(blendshape_node,base_mesh, target_names, shapes_and_weights,target_connections_in,UE_compatible_inbetweens = make_unreal_compatible,delete_original_node = delete_orignal_node)
-    if not delete_orignal_node:
+    new_blendshape, new_drivers = recreate_blendshape(blendshape_node,base_mesh, target_names, shapes_and_weights,target_connections_in,UE_compatible_inbetweens = make_unreal_compatible, dummy_shapes_drivers=dummy_shapes)
+    reconnect_original_outputs(target_conections_out, new_drivers)
+    if delete_original_node:
+        cmds.delete(blendshape_node)
+    else:
         reconnect_original_connections(blendshape_node, target_connections_in,target_names)
-
 def reconnect_original_connections(blendshape_node, target_connections_in,targets):
     for connection_in, target in zip(target_connections_in,targets):
         if connection_in:
@@ -52,10 +83,9 @@ def reconnect_original_connections(blendshape_node, target_connections_in,target
     cmds.setAttr(blendshape_node + '.envelope', 0)
 
 
-def recreate_blendshape(blendshape_node,base_mesh, target_names, shapes_and_weights,target_connections_in, UE_compatible_inbetweens=True, delete_original_node = False):
-    if delete_original_node:
-        cmds.delete(blendshape_node)
-        
+def recreate_blendshape(blendshape_node,base_mesh, target_names, shapes_and_weights,target_connections_in, UE_compatible_inbetweens=True, dummy_shapes_drivers=False):
+
+    new_drivers = []  
     new_blendshape = cmds.blendShape(base_mesh, name=blendshape_node+ '_Baked')[0]
     for i, shape_tuple in enumerate(shapes_and_weights):
         full_shape = shape_tuple[2]
@@ -63,6 +93,7 @@ def recreate_blendshape(blendshape_node,base_mesh, target_names, shapes_and_weig
         inbetween_weights = shape_tuple[1]
         conn = target_connections_in[i]
         if not UE_compatible_inbetweens:
+            
             cmds.blendShape(new_blendshape, e=True, target=(base_mesh, i, full_shape, 1.0))
             cmds.delete(full_shape)
             for weight, shape in zip(inbetween_weights, inbetween_shapes):
@@ -70,7 +101,9 @@ def recreate_blendshape(blendshape_node,base_mesh, target_names, shapes_and_weig
                     continue
                 cmds.blendShape(new_blendshape, e=True, target=(base_mesh, i, shape, weight), inBetween=True)
                 cmds.delete(shape)
-            rename_blendshape_target(new_blendshape, full_shape, target_names[i]) 
+            rename_blendshape_target(new_blendshape, full_shape, target_names[i])
+            #new driver is the same target on the new blendshape node
+            new_drivers.append(new_blendshape + '.' + target_names[i])
         #reconnect the connections
         
             if conn:
@@ -78,12 +111,27 @@ def recreate_blendshape(blendshape_node,base_mesh, target_names, shapes_and_weig
                     cmds.connectAttr(connection, new_blendshape + '.' + target_names[i])
         else:
             #insert 0 in the weights list. Go through the list and if the next weight value is positive insert 0 at the current index. Also insert an empty string in the shapes list
-
             for j in range(len(inbetween_weights)):
                 if inbetween_weights[j] > 0:
                     inbetween_weights.insert(j,0.0)
                     inbetween_shapes.insert(j,'')
                     break
+            #create a float constant driver node representing the original blendshape weight
+            if dummy_shapes_drivers:
+                name = target_names[i]
+                #Create an attribute on the new blendshape node with the same name as the original target
+                duplicated_base_mesh = duplicate_without_deformation(base_mesh)[0]
+                add_blendshape_target_with_name(new_blendshape,base_mesh,duplicated_base_mesh,name)
+                cmds.delete(duplicated_base_mesh)
+                shape_driver_output = new_blendshape + '.' + name
+                shape_driver_input = new_blendshape + '.' + name
+            else:
+                shape_driver = cmds.shadingNode('floatConstant', asUtility=True, name=name + '_driver')
+                shape_driver_output = shape_driver + '.outFloat'
+                shape_driver_input = shape_driver + '.inFloat'
+            new_drivers.append(shape_driver_input)
+            if conn:
+                cmds.connectAttr(conn[0], shape_driver_input)
             for j,(weight, shape) in enumerate(zip(inbetween_weights,inbetween_shapes)):
                 if weight == 0.0:
                     continue
@@ -94,12 +142,22 @@ def recreate_blendshape(blendshape_node,base_mesh, target_names, shapes_and_weig
                 w_a = inbetween_weights[j-1] if j>0 else inbetween_weights[j+1]
                 w_b = inbetween_weights[j]
                 w_c = inbetween_weights[j+1] if j+1 < len(inbetween_weights) else inbetween_weights[j-1]
-                if conn:
-                    driver_input = conn[0]
-                    output = create_inbetweener_driver(w_a,w_b,w_c,driver_input, second_first= j == 1, second_last=j == len(inbetween_weights)-2)
-                    cmds.connectAttr(output, new_blendshape + '.' + target_name)
+                output = create_inbetweener_driver(w_a,w_b,w_c,shape_driver_output, second_first= j == 1, second_last=j == len(inbetween_weights)-2)
+                cmds.connectAttr(output, new_blendshape + '.' + target_name)
                 cmds.delete(shape)
             cmds.delete(full_shape)
+        
+    return new_blendshape, new_drivers
+def reconnect_original_outputs(target_conections_out, new_drivers):
+    """Takes the output connectios from the original blendshape node and reconnects them to the new drivers.
+    This ensures things like combination targets are still working."""
+    print(new_drivers)
+    print(target_conections_out)
+    for connection_out, driver in zip(target_conections_out, new_drivers):
+        if connection_out:
+            for connection in connection_out:
+                cmds.connectAttr(driver, connection, force=True)
+    #get all attributes which have connections
 
 def add_blendshape_target_with_name(blendshape_node,base_mesh,target_mesh, name):
     """Adds a blendshape target and gives it the specified name"""
@@ -296,7 +354,8 @@ def bake_blendnode(*args):
     blendshape_node = cmds.optionMenu("blendshapeNodeMenu", query=True, value=True)
     delete_orignal_node = cmds.checkBox("DeleteOriginalNode", query=True, value=True)
     make_unreal_compatible = cmds.checkBox("UnrealCompatibleInbetweens", query=True, value=True)
-    bake_blendshape_painted_weights(blendshape_node, make_unreal_compatible, delete_orignal_node)
+    dummy_shapes = cmds.checkBox("DummyAttributeDrivers", query=True, value=True)
+    bake_blendshape_painted_weights(blendshape_node, make_unreal_compatible, delete_orignal_node,dummy_shapes)
 def create_ui():
     """
     UI for baker.
@@ -320,10 +379,11 @@ def create_ui():
     cmds.checkBox("UnrealCompatibleInbetweens",label="Unreal Compatible Inbetweens", value=True)
     #add button "delete original node"
     cmds.checkBox("DeleteOriginalNode",label="Delete Original Node", value=True)
+    cmds.checkBox("DummyAttributeDrivers",label="Create Dummy Attribute Drivers", value=True)
     
     
     # Generate button
-    cmds.button(label="Bake to UE4 compatible", command=bake_blendnode)
+    cmds.button(label="Bake to Unreal Engine compatible", command=bake_blendnode)
     
     cmds.showWindow()
 
