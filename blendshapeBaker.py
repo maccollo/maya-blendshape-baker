@@ -69,7 +69,7 @@ def bake_blendshape_painted_weights(blendshape_node, make_unreal_compatible, del
     break_blendShape_target_connections(blendshape_node)
     zero_blendsShape_target_weights(blendshape_node)
     shapes_and_weights = duplicate_shapes(blendshape_node,target_names, base_mesh)
-    new_blendshape, new_drivers = recreate_blendshape(blendshape_node,base_mesh, target_names, shapes_and_weights,target_connections_in,UE_compatible_inbetweens = make_unreal_compatible, dummy_shapes_drivers=dummy_shapes)
+    new_blendshape_node, new_drivers = recreate_blendshape(blendshape_node,base_mesh, target_names, shapes_and_weights,target_connections_in,UE_compatible_inbetweens = make_unreal_compatible, dummy_shapes_drivers=dummy_shapes)
     reconnect_original_outputs(target_conections_out, new_drivers)
     if delete_original_node:
         cmds.delete(blendshape_node)
@@ -85,7 +85,15 @@ def reconnect_original_connections(blendshape_node, target_connections_in,target
 
 def recreate_blendshape(blendshape_node,base_mesh, target_names, shapes_and_weights,target_connections_in, UE_compatible_inbetweens=True, dummy_shapes_drivers=False):
     new_drivers = []  
-    new_blendshape = cmds.blendShape(base_mesh, name=blendshape_node+ '_Baked')[0]
+    new_blendshape = cmds.blendShape(base_mesh, name=blendshape_node+ '_Baked',before = True)[0]
+    #change the order so the new blendshape is one above the original
+    base_mesh_deformer = get_mesh_deformer_excluding_blendshape_deformers(blendshape_node, base_mesh)
+    for deformer in base_mesh_deformer:
+        if deformer == blendshape_node:
+            break
+        swap_deformer = deformer
+    if swap_deformer and swap_deformer != blendshape_node:
+        cmds.reorderDeformers(swap_deformer, new_blendshape, base_mesh)
     for i, shape_tuple in enumerate(shapes_and_weights):
         full_shape = shape_tuple[2]
         inbetween_shapes = shape_tuple[0]
@@ -150,14 +158,31 @@ def recreate_blendshape(blendshape_node,base_mesh, target_names, shapes_and_weig
 def reconnect_original_outputs(target_conections_out, new_drivers):
     """Takes the output connectios from the original blendshape node and reconnects them to the new drivers.
     This ensures things like combination targets are still working."""
-    print(new_drivers)
-    print(target_conections_out)
     for connection_out, driver in zip(target_conections_out, new_drivers):
         if connection_out:
             for connection in connection_out:
                 cmds.connectAttr(driver, connection, force=True)
     #get all attributes which have connections
-
+def get_all_blendnode_mesh_deformers(blendshape_node, base_mesh):
+    """finds all deformers connected to meshes that drive the blendshape node"""
+    #First get the list of all meshes directly connected into the blendshape node
+    inputs = meshes = cmds.listConnections(blendshape_node , source=True, destination=False)
+    #filter out anything that is not a mesh
+    meshes = [mesh for mesh in meshes if cmds.nodeType(mesh) == 'transform' and not mesh == base_mesh]
+    #Get all the deformers
+    deformers = []
+    for mesh in meshes:
+        mesh_history = cmds.listHistory(mesh)
+        mesh_deformers = [item for item in mesh_history if cmds.attributeQuery('envelope', node=item, exists=True)]
+        deformers.extend(mesh_deformers)
+    return list(set(deformers))
+def get_mesh_deformer_excluding_blendshape_deformers(blendshape_node, base_mesh):
+    """Returns all deformers on the base mesh that are not connected to the blendshape node."""
+    blendshape_deformers = get_all_blendnode_mesh_deformers(blendshape_node, base_mesh)
+    base_mesh_deformers = cmds.listHistory(base_mesh)
+    base_mesh_deformers = [deformer for deformer in base_mesh_deformers if cmds.attributeQuery('envelope', node=deformer, exists=True)]
+    base_mesh_deformers = [deformer for deformer in base_mesh_deformers if deformer not in blendshape_deformers]    
+    return base_mesh_deformers
 def add_blendshape_target_with_name(blendshape_node,base_mesh,target_mesh, name):
     """Adds a blendshape target and gives it the specified name"""
     first_target = get_number_of_blendshape_targets(blendshape_node) == 0
@@ -178,6 +203,17 @@ def get_number_of_blendshape_targets(blendshape_node):
     else:
         return 0
 def duplicate_shapes(blendshape_node,targets,base_mesh):
+    #First set the envelope of every deformer except the blendshape node to 0
+    base_mesh_deformers = get_mesh_deformer_excluding_blendshape_deformers(blendshape_node, base_mesh)
+    for node in base_mesh_deformers:
+        cmds.setAttr(node + '.envelope', 0)
+    cmds.setAttr(blendshape_node + '.envelope', 1)
+
+    #make sure the blend node is at the top of the history
+    #keep track of the order before reassignemnt
+    #select base mesh
+    #if not first_deformer == blendshape_node:
+        #cmds.reorderDeformers(blendshape_node, first_deformer,base_mesh)
     shapes_and_weights = []
     for target in targets:
         weights,_,_,_ = find_inbetween_weights_from_target_name(blendshape_node, target)
@@ -191,6 +227,11 @@ def duplicate_shapes(blendshape_node,targets,base_mesh):
         duplicated_mesh=cmds.duplicate(base_mesh)[0]
         cmds.setAttr(blendshape_node + '.' + target, 0)
         shapes_and_weights.append((shapes,weights,duplicated_mesh))
+    #Set the envelope of every deformer back to 1
+    #if not first_deformer == blendshape_node:
+        #cmds.reorderDeformers(first_deformer,blendshape_node,base_mesh)
+    for node in base_mesh_deformers:
+        cmds.setAttr(node + '.envelope', 1)
     return shapes_and_weights
     
 def find_inbetween_weights_from_target_name(blendshape_node, target_name):
@@ -378,7 +419,7 @@ def create_ui():
     cmds.checkBox("UnrealCompatibleInbetweens",label="Unreal Compatible Inbetweens", value=True)
     #add button "delete original node"
     cmds.checkBox("DeleteOriginalNode",label="Delete Original Node", value=True)
-    cmds.checkBox("DummyAttributeDrivers",label="Create Dummy Attribute Drivers", value=True)
+    cmds.checkBox("DummyAttributeDrivers",label="Create Dummy Target Drivers", value=True)
     
     
     # Generate button
