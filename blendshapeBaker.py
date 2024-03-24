@@ -84,7 +84,6 @@ def reconnect_original_connections(blendshape_node, target_connections_in,target
 
 
 def recreate_blendshape(blendshape_node,base_mesh, target_names, shapes_and_weights,target_connections_in, UE_compatible_inbetweens=True, dummy_shapes_drivers=False):
-
     new_drivers = []  
     new_blendshape = cmds.blendShape(base_mesh, name=blendshape_node+ '_Baked')[0]
     for i, shape_tuple in enumerate(shapes_and_weights):
@@ -93,11 +92,11 @@ def recreate_blendshape(blendshape_node,base_mesh, target_names, shapes_and_weig
         inbetween_weights = shape_tuple[1]
         conn = target_connections_in[i]
         if not UE_compatible_inbetweens:
-            
             cmds.blendShape(new_blendshape, e=True, target=(base_mesh, i, full_shape, 1.0))
             cmds.delete(full_shape)
             for weight, shape in zip(inbetween_weights, inbetween_shapes):
                 if weight == 1.0:
+                    cmds.delete(shape)
                     continue
                 cmds.blendShape(new_blendshape, e=True, target=(base_mesh, i, shape, weight), inBetween=True)
                 cmds.delete(shape)
